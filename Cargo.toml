@@ -1,9 +1,22 @@
 [package]
 name = "the-interner"
 version = "0.1.0"
-edition = "2024"
+authors = ["DaniPopes <57450786+DaniPopes@users.noreply.github.com>"]
+description = "Efficient, thread-safe string interning"
+edition = "2021"
+rust-version = "1.71"
+license = "MIT OR Apache-2.0"
+categories = ["caching"]
+keywords = ["symbol", "interning", "string-interning", "hash", "cache"]
+documentation = "https://docs.rs/tbd"
+homepage = "https://github.com/danipopes/tbd"
+repository = "https://github.com/danipopes/tbd"
+exclude = [".github/", "benches/", "fuzz/", "tests/"]
 
 [dependencies]
-bumpalo = "3.17.0"
-dashmap = { version = "7.0.0-rc2", features = ["raw-api", "inline-more"] }
+bumpalo = { version = "3", default-features = false }
+dashmap = { version = "7.0.0-rc2", default-features = false, features = [
+    "raw-api",
+    "inline-more",
+] }
 hashbrown = { version = "0.15", default-features = false }

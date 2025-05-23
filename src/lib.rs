@@ -1,34 +1,10 @@
-//! Efficient, thread-safe string interner.
-//!
-//! # Examples
-//!
-//! ```
-//! use the_interner::Interner;
-//!
-//! let interner = Interner::new();
-//! let hello = interner.intern("hello");
-//! assert_eq!(hello.get(), 0);
-//! assert_eq!(interner.resolve(hello), "hello");
-//!
-//! let world = interner.intern("world");
-//! assert_eq!(world.get(), 1);
-//! assert_eq!(interner.resolve(world), "world");
-//!
-//! let hello2 = interner.intern("hello");
-//! assert_eq!(hello, hello2);
-//!
-//! assert_eq!(interner.len(), 2);
-//! ```
-
+#![doc = include_str!("../README.md")]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
 use bumpalo::Bump;
 use dashmap::{DashMap, RwLock};
-use std::{
-    hash::{BuildHasher, RandomState},
-    num::NonZeroU32,
-};
+use std::{collections::hash_map::RandomState, hash::BuildHasher, num::NonZeroU32};
 
 mod no_hash;
 use no_hash::NoHasherBuilder;

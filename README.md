@@ -1,6 +1,6 @@
 # the-interner
 
-Efficient, thread-safe string interner.
+Efficient, thread-safe string interning.
 
 ## Examples
 
