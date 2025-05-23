@@ -6,9 +6,6 @@ use bumpalo::Bump;
 use dashmap::{DashMap, RwLock};
 use std::{collections::hash_map::RandomState, hash::BuildHasher, num::NonZeroU32};
 
-mod no_hash;
-use no_hash::NoHasherBuilder;
-
 /// Unique identifier for a string in an [`Interner`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Symbol(NonZeroU32);
@@ -162,11 +159,7 @@ impl<S: BuildHasher> Interner<S> {
     }
 
     #[inline]
-    fn do_intern<'a>(
-        &self,
-        s: &'a str,
-        alloc: impl FnOnce(&'a str, &mut Bump) -> &'static str,
-    ) -> Symbol {
+    fn do_intern(&self, s: &str, alloc: impl FnOnce(&mut Bump, &str) -> &'static str) -> Symbol {
         let hash = self.hash(s);
         let shard_idx = self.map.determine_shard(hash as usize);
         let shard = &*self.map.shards()[shard_idx];
@@ -186,10 +179,10 @@ impl<S: BuildHasher> Interner<S> {
     }
 
     #[inline]
-    fn do_intern_mut<'a>(
+    fn do_intern_mut(
         &mut self,
-        s: &'a str,
-        alloc: impl FnOnce(&'a str, &mut Bump) -> &'static str,
+        s: &str,
+        alloc: impl FnOnce(&mut Bump, &str) -> &'static str,
     ) -> Symbol {
         let hash = self.hash(s);
         let shard_idx = self.map.determine_shard(hash as usize);
@@ -208,15 +201,28 @@ impl<S: BuildHasher> Interner<S> {
     }
 }
 
+type NoHasherBuilder = std::hash::BuildHasherDefault<NoHasher>;
+
+#[derive(Default)]
+struct NoHasher;
+impl std::hash::Hasher for NoHasher {
+    fn finish(&self) -> u64 {
+        unimplemented!()
+    }
+    fn write(&mut self, _bytes: &[u8]) {
+        unimplemented!()
+    }
+}
+
 #[inline]
-fn insert_vacant<'a>(
+fn insert_vacant(
     inner: &mut Inner,
-    s: &'a str,
+    s: &str,
     hash: u64,
     e: hashbrown::hash_table::VacantEntry<'_, MapKey>,
-    alloc: impl FnOnce(&'a str, &mut Bump) -> &'static str,
+    alloc: impl FnOnce(&mut Bump, &str) -> &'static str,
 ) -> Symbol {
-    let s = alloc(s, &mut inner.arena);
+    let s = alloc(&mut inner.arena, s);
     let new_sym = Symbol::from_usize(inner.strs.len());
     inner.strs.push(s);
     e.insert((hash, new_sym));
@@ -234,14 +240,14 @@ fn mk_eq(hash: u64) -> impl Fn(&MapKey) -> bool + Copy {
 }
 
 #[inline]
-fn alloc(s: &str, arena: &mut Bump) -> &'static str {
+fn alloc(arena: &mut Bump, s: &str) -> &'static str {
     // SAFETY: extends the lifetime of `&mut Bump` to `'static`. This is never exposed so it's ok.
     unsafe { std::mem::transmute::<&str, &'static str>(arena.alloc_str(s)) }
 }
 
 #[inline]
-fn no_alloc(s: &str, _: &mut Bump) -> &'static str {
-    // SAFETY: `s` outlives `bump`, so we don't need to allocate it. See above.
+fn no_alloc(_: &mut Bump, s: &str) -> &'static str {
+    // SAFETY: `s` outlives `Bump`, so we don't need to allocate it. See above.
     unsafe { std::mem::transmute::<&str, &'static str>(s) }
 }
 
