@@ -176,7 +176,6 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
     ///
     /// If `s` outlives `self`, like `&'static str`, prefer using
     /// [`intern_static`](Self::intern_static), as it will not allocate the string on the heap.
-    #[inline]
     pub fn intern(&self, s: &str) -> S {
         self.do_intern(s, alloc)
     }
@@ -190,7 +189,6 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
     /// heap.
     ///
     /// By taking `&mut self`, this never acquires any locks.
-    #[inline]
     pub fn intern_mut(&mut self, s: &str) -> S {
         self.do_intern_mut(s, alloc)
     }
@@ -199,7 +197,6 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
     ///
     /// Note that this only requires that `s` outlives `self`, which means we can avoid allocating
     /// the string.
-    #[inline]
     pub fn intern_static<'a, 'b: 'a>(&'a self, s: &'b str) -> S {
         self.do_intern(s, no_alloc)
     }
@@ -210,7 +207,6 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
     /// the string.
     ///
     /// By taking `&mut self`, this never acquires any locks.
-    #[inline]
     pub fn intern_mut_static<'a, 'b: 'a>(&'a mut self, s: &'b str) -> S {
         self.do_intern_mut(s, no_alloc)
     }
@@ -284,7 +280,10 @@ fn insert<S: InternerSymbol>(
     alloc: impl FnOnce(&Bump, &str) -> &'static str,
 ) -> S {
     match shard.entry(hash, mk_eq(s), hasher) {
-        hash_table::Entry::Occupied(e) => e.get().1,
+        hash_table::Entry::Occupied(e) => {
+            // TODO: cold path
+            e.get().1
+        }
         hash_table::Entry::Vacant(e) => {
             let s = alloc(arena.get_or_default(), s);
             let i = strs.push(s);

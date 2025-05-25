@@ -15,6 +15,10 @@ const BUCKETS: usize = POINTER_WIDTH as usize;
 pub(crate) struct AppendOnlyVec<T: Send> {
     /// The `n`th bucket contains `2^n` elements. Each bucket is lazily allocated.
     buckets: Box<[AtomicPtr<Entry<T>>; BUCKETS]>,
+    /// The total number of elements.
+    ///
+    /// Note that it's possible for the length to be temporarily greater than the actual number of
+    /// *initialized* elements, so it should not be relied upon for `get` operations.
     len: AtomicUsize,
 }
 
@@ -44,7 +48,7 @@ impl<T: Send> Drop for AppendOnlyVec<T> {
         for (i, bucket) in self.buckets.iter_mut().enumerate() {
             let bucket_ptr = *bucket.get_mut();
             if bucket_ptr.is_null() {
-                continue;
+                break;
             }
             unsafe { deallocate_bucket(bucket_ptr, bucket_size(i)) };
         }
@@ -59,19 +63,20 @@ impl<T: Send> AppendOnlyVec<T> {
 
     pub(crate) fn with_capacity(capacity: usize) -> AppendOnlyVec<T> {
         let mut this = Self::new();
-        if let Some(last_idx) = capacity.checked_sub(1) {
-            let Indexes { bucket, .. } = indexes(last_idx);
-            for (i, bucket) in this.buckets[..=bucket].iter_mut().enumerate() {
-                *bucket.get_mut() = allocate_bucket::<T>(bucket_size(i));
-            }
+        let buckets = n_buckets(capacity);
+        for (i, bucket) in this.buckets[..buckets].iter_mut().enumerate() {
+            *bucket.get_mut() = allocate_bucket(bucket_size(i));
         }
         this
     }
 
+    /// Returns the length of the vector.
+    #[inline]
     pub(crate) fn len(&self) -> usize {
         self.len.load(Ordering::Relaxed)
     }
 
+    #[inline]
     pub(crate) fn push(&self, value: T) -> usize {
         let i = self.len.fetch_add(1, Ordering::AcqRel);
         let Indexes { bucket, index, bucket_size } = indexes(i);
@@ -81,23 +86,7 @@ impl<T: Send> AppendOnlyVec<T> {
 
         // If the bucket doesn't already exist, we need to allocate it
         let bucket_ptr = if bucket_ptr.is_null() {
-            let new_bucket = allocate_bucket(bucket_size);
-
-            match bucket_atomic_ptr.compare_exchange(
-                ptr::null_mut(),
-                new_bucket,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => new_bucket,
-                // If the bucket value changed (from null), that means
-                // another thread stored a new bucket before we could,
-                // and we can free our bucket and use that one instead
-                Err(bucket_ptr) => {
-                    unsafe { deallocate_bucket(new_bucket, bucket_size) }
-                    bucket_ptr
-                }
-            }
+            Self::allocate_bucket_cold(bucket_atomic_ptr, bucket_size)
         } else {
             bucket_ptr
         };
@@ -111,6 +100,28 @@ impl<T: Send> AppendOnlyVec<T> {
         i
     }
 
+    #[inline(never)]
+    #[cold]
+    fn allocate_bucket_cold(bucket_atomic_ptr: &AtomicPtr<Entry<T>>, size: usize) -> *mut Entry<T> {
+        let new_bucket = allocate_bucket(size);
+        match bucket_atomic_ptr.compare_exchange(
+            ptr::null_mut(),
+            new_bucket,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => new_bucket,
+            // If the bucket value changed (from null), that means
+            // another thread stored a new bucket before we could,
+            // and we can free our bucket and use that one instead
+            Err(bucket_ptr) => {
+                unsafe { deallocate_bucket(new_bucket, size) }
+                bucket_ptr
+            }
+        }
+    }
+
+    #[inline]
     pub(crate) fn get(&self, index: usize) -> Option<&T> {
         let Indexes { bucket, index, bucket_size: _ } = indexes(index);
         let bucket_ptr = unsafe { self.buckets.get_unchecked(bucket) }.load(Ordering::Acquire);
@@ -127,13 +138,23 @@ impl<T: Send> AppendOnlyVec<T> {
         }
     }
 
+    #[inline]
     pub(crate) unsafe fn get_unchecked(&self, index: usize) -> &T {
+        #[cfg(debug_assertions)]
+        {
+            let len = self.len();
+            assert!(index < len, "index out of bounds: the len is {len} but the index is {index}");
+        }
         unsafe { self.get(index).unwrap_unchecked() }
     }
 
     #[cfg(test)]
     fn count_buckets(&self) -> usize {
-        self.buckets.iter().filter(|b| !b.load(Ordering::Relaxed).is_null()).count()
+        let n = self.buckets.iter().take_while(|b| !b.load(Ordering::Relaxed).is_null()).count();
+        for bucket in &self.buckets[n..] {
+            assert!(bucket.load(Ordering::Relaxed).is_null(), "discontiguous buckets");
+        }
+        n
     }
 }
 
@@ -145,16 +166,24 @@ struct Indexes {
 }
 
 #[inline]
-fn indexes(i: usize) -> Indexes {
+const fn indexes(i: usize) -> Indexes {
     debug_assert!(i < usize::MAX);
-    let bucket = usize::from(POINTER_WIDTH) - ((i + 1).leading_zeros() as usize) - 1;
+    // `+ 1` to convert index to length; `- 1` to convert bucket length to bucket index.
+    let bucket = n_buckets(i + 1) - 1;
     let bucket_size = bucket_size(bucket);
     let index = i - (bucket_size - 1);
     Indexes { bucket, index, bucket_size }
 }
 
+/// Returns the number of buckets needed to store `len` elements.
 #[inline]
-fn bucket_size(bucket: usize) -> usize {
+const fn n_buckets(len: usize) -> usize {
+    POINTER_WIDTH as usize - len.leading_zeros() as usize
+}
+
+/// Returns the size of the bucket at the given index.
+#[inline]
+const fn bucket_size(bucket: usize) -> usize {
     1 << bucket
 }
 
