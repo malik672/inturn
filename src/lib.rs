@@ -100,8 +100,9 @@ impl InternerSymbol for Symbol {
 ///
 /// This uses `NoHasher` because we want to store the `hash_builder`
 /// outside of the lock, and to avoid hashing twice on insertion.
-type Map<S> = DashMap<u64, S, NoHasherBuilder>;
-type MapKey<S> = (u64, S);
+type Map<S> = DashMap<MapKey, S, NoHasherBuilder>;
+type MapKey = (u64, &'static str);
+type RawMapKey<S> = (MapKey, S);
 
 /// String interner.
 ///
@@ -228,7 +229,7 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
         let hash = self.hash(s);
         let shard_idx = self.map.determine_shard(hash as usize);
         let shard = &*self.map.shards()[shard_idx];
-        let eq = mk_eq(hash);
+        let eq = mk_eq(s);
 
         if let Some((_, sym)) = shard.read().find(hash, eq) {
             return *sym;
@@ -248,7 +249,7 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
         let hash = self.hash(s);
         let shard_idx = self.map.determine_shard(hash as usize);
         let shard = &mut *self.map.shards_mut()[shard_idx];
-        match shard.get_mut().entry(hash, mk_eq(hash), hasher) {
+        match shard.get_mut().entry(hash, mk_eq(s), hasher) {
             hashbrown::hash_table::Entry::Occupied(e) => e.get().1,
             hashbrown::hash_table::Entry::Vacant(e) => {
                 insert_vacant(self.inner.get_mut(), s, hash, e, alloc)
@@ -280,24 +281,24 @@ fn insert_vacant<S: InternerSymbol>(
     inner: &mut Inner,
     s: &str,
     hash: u64,
-    e: hashbrown::hash_table::VacantEntry<'_, MapKey<S>>,
+    e: hashbrown::hash_table::VacantEntry<'_, RawMapKey<S>>,
     alloc: impl FnOnce(&mut Bump, &str) -> &'static str,
 ) -> S {
     let s = alloc(&mut inner.arena, s);
     let new_sym = S::try_from_usize(inner.strs.len()).expect("ran out of symbols");
     inner.strs.push(s);
-    e.insert((hash, new_sym));
+    e.insert(((hash, s), new_sym));
     new_sym
 }
 
 #[inline]
-fn hasher<S>((hash, _): &MapKey<S>) -> u64 {
+fn hasher<S>(((hash, _), _): &RawMapKey<S>) -> u64 {
     *hash
 }
 
 #[inline]
-fn mk_eq<S>(hash: u64) -> impl Fn(&MapKey<S>) -> bool + Copy {
-    move |(h, _): &MapKey<S>| *h == hash
+fn mk_eq<S>(s: &str) -> impl Fn(&RawMapKey<S>) -> bool + Copy + '_ {
+    move |((_, ss), _): &RawMapKey<S>| s == *ss
 }
 
 #[inline]
