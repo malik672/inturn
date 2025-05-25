@@ -256,14 +256,21 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
 
 type NoHasherBuilder = std::hash::BuildHasherDefault<NoHasher>;
 
-#[derive(Default)]
-struct NoHasher;
-impl std::hash::Hasher for NoHasher {
-    fn finish(&self) -> u64 {
-        unimplemented!()
+enum NoHasher {}
+impl Default for NoHasher {
+    #[inline]
+    fn default() -> Self {
+        unreachable!()
     }
+}
+impl std::hash::Hasher for NoHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        match *self {}
+    }
+    #[inline]
     fn write(&mut self, _bytes: &[u8]) {
-        unimplemented!()
+        match *self {}
     }
 }
 
