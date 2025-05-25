@@ -9,7 +9,7 @@ const POINTER_WIDTH: u8 = usize::BITS as u8;
 
 /// The total number of buckets stored in each thread local.
 /// All buckets combined can hold up to `2^POINTER_WIDTH - 1` entries.
-const BUCKETS: usize = (POINTER_WIDTH - 1) as usize;
+const BUCKETS: usize = POINTER_WIDTH as usize;
 
 /// Lock-free, append-only dynamic array.
 pub(crate) struct AppendOnlyVec<T: Send> {
@@ -46,7 +46,7 @@ impl<T: Send> Drop for AppendOnlyVec<T> {
             if bucket_ptr.is_null() {
                 continue;
             }
-            unsafe { deallocate_bucket(bucket_ptr, bucket_len(i)) };
+            unsafe { deallocate_bucket(bucket_ptr, bucket_size(i)) };
         }
     }
 }
@@ -59,12 +59,12 @@ impl<T: Send> AppendOnlyVec<T> {
 
     pub(crate) fn with_capacity(capacity: usize) -> AppendOnlyVec<T> {
         let mut this = Self::new();
-
-        let Indexes { bucket, .. } = indexes(capacity);
-        for (i, bucket) in this.buckets[..bucket].iter_mut().enumerate() {
-            *bucket.get_mut() = allocate_bucket::<T>(bucket_len(i));
+        if let Some(last_idx) = capacity.checked_sub(1) {
+            let Indexes { bucket, .. } = indexes(last_idx);
+            for (i, bucket) in this.buckets[..=bucket].iter_mut().enumerate() {
+                *bucket.get_mut() = allocate_bucket::<T>(bucket_size(i));
+            }
         }
-
         this
     }
 
@@ -137,6 +137,7 @@ impl<T: Send> AppendOnlyVec<T> {
     }
 }
 
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 struct Indexes {
     bucket: usize,
     index: usize,
@@ -145,14 +146,15 @@ struct Indexes {
 
 #[inline]
 fn indexes(i: usize) -> Indexes {
+    debug_assert!(i < usize::MAX);
     let bucket = usize::from(POINTER_WIDTH) - ((i + 1).leading_zeros() as usize) - 1;
-    let bucket_size = bucket_len(bucket);
+    let bucket_size = bucket_size(bucket);
     let index = i - (bucket_size - 1);
     Indexes { bucket, index, bucket_size }
 }
 
 #[inline]
-fn bucket_len(bucket: usize) -> usize {
+fn bucket_size(bucket: usize) -> usize {
     1 << bucket
 }
 
@@ -193,5 +195,49 @@ mod tests {
         assert_eq!(vec.count_buckets(), n_buckets);
         vec.push(6969);
         assert_eq!(vec.count_buckets(), n_buckets + 1);
+    }
+
+    #[test]
+    fn correct_capacity() {
+        type V = AppendOnlyVec<u32>;
+
+        assert_eq!(V::new().count_buckets(), 0);
+        assert_eq!(V::with_capacity(0).count_buckets(), 0);
+
+        assert_eq!(V::with_capacity(1).count_buckets(), 1);
+
+        assert_eq!(V::with_capacity(2).count_buckets(), 2);
+        assert_eq!(V::with_capacity(3).count_buckets(), 2);
+
+        assert_eq!(V::with_capacity(4).count_buckets(), 3);
+        assert_eq!(V::with_capacity(5).count_buckets(), 3);
+        assert_eq!(V::with_capacity(6).count_buckets(), 3);
+        assert_eq!(V::with_capacity(7).count_buckets(), 3);
+
+        assert_eq!(V::with_capacity(8).count_buckets(), 4);
+    }
+
+    #[test]
+    fn test_indexes() {
+        assert_eq!(indexes(0), Indexes { bucket: 0, index: 0, bucket_size: 1 });
+
+        assert_eq!(indexes(1), Indexes { bucket: 1, index: 0, bucket_size: 2 });
+        assert_eq!(indexes(2), Indexes { bucket: 1, index: 1, bucket_size: 2 });
+
+        assert_eq!(indexes(3), Indexes { bucket: 2, index: 0, bucket_size: 4 });
+        assert_eq!(indexes(4), Indexes { bucket: 2, index: 1, bucket_size: 4 });
+        assert_eq!(indexes(5), Indexes { bucket: 2, index: 2, bucket_size: 4 });
+        assert_eq!(indexes(6), Indexes { bucket: 2, index: 3, bucket_size: 4 });
+
+        assert_eq!(indexes(7), Indexes { bucket: 3, index: 0, bucket_size: 8 });
+
+        assert_eq!(indexes(usize::MAX - 1).bucket, BUCKETS - 1);
+    }
+
+    #[cfg(debug_assertions)] // TODO: Technically UB on release but it's not exposed in Interner
+    #[test]
+    #[should_panic]
+    fn test_indexes_oob() {
+        indexes(usize::MAX);
     }
 }
