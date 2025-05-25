@@ -333,12 +333,12 @@ mod tests {
             let hello = interner.$intern("hello");
             assert_eq!(hello.get(), 0);
             assert_eq!(interner.resolve(hello), "hello");
-            assert_eq!(interner.map.len(), 1);
+            assert_eq!(interner.len(), 1);
 
             let world = interner.$intern("world");
             assert_eq!(world.get(), 1);
             assert_eq!(interner.resolve(world), "world");
-            assert_eq!(interner.map.len(), 2);
+            assert_eq!(interner.len(), 2);
 
             let hello2 = interner.$intern("hello");
             assert_eq!(hello, hello2);
@@ -348,7 +348,7 @@ mod tests {
             let world2 = interner.$intern("world");
             assert_eq!(world, world2);
 
-            assert_eq!(interner.map.len(), 2);
+            assert_eq!(interner.len(), 2);
 
             #[allow(unused_mut)]
             let mut interner2 = Interner::new();
@@ -360,7 +360,7 @@ mod tests {
             assert_eq!(interner2.resolve(world), "world");
             assert_eq!(interner2.$intern("hello"), hello);
             assert_eq!(interner2.$intern("world"), world);
-            assert_eq!(interner2.map.len(), 2);
+            assert_eq!(interner2.len(), 2);
         };
     }
 
@@ -405,7 +405,7 @@ mod tests {
             }
         });
 
-        assert_eq!(interner.map.len(), n_threads * symbols_per_thread);
+        assert_eq!(interner.len(), n_threads * symbols_per_thread);
     }
 
     #[test]
@@ -428,5 +428,6 @@ mod tests {
         assert_eq!(world.get(), 1);
         assert_eq!(interner.resolve(hello), "hello");
         assert_eq!(interner.resolve(world), "world");
+        assert_eq!(interner.len(), 2);
     }
 }
