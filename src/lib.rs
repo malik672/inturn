@@ -3,8 +3,16 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
 use bumpalo::Bump;
-use dashmap::{DashMap, RwLock};
-use std::{collections::hash_map::RandomState, hash::BuildHasher, num::NonZeroU32};
+use dashmap::DashMap;
+use std::{
+    collections::hash_map::RandomState,
+    hash::BuildHasher,
+    num::NonZeroU32,
+    sync::{Mutex, PoisonError},
+};
+
+mod append_only_vec;
+use append_only_vec::AppendOnlyVec;
 
 /// Default unique identifier for a string in an [`Interner`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -113,17 +121,10 @@ type RawMapKey<S> = (MapKey, S);
 /// See the [module docs][self] for more details.
 pub struct Interner<S = Symbol, H = RandomState> {
     map: Map<S>,
-    inner: RwLock<Inner>,
+    strs: AppendOnlyVec<&'static str>,
+    arena: Mutex<Bump>,
     hash_builder: H,
 }
-
-struct Inner {
-    strs: Vec<&'static str>,
-    arena: Bump,
-}
-
-// SAFETY: `Bump` is only used when we have exclusive write access to `Inner`.
-unsafe impl Sync for Inner {}
 
 impl Default for Interner {
     #[inline]
@@ -156,14 +157,14 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
     /// Creates a new `Interner` with the given capacitiy and custom hasher.
     pub fn with_capacity_and_hasher(capacity: usize, hash_builder: H) -> Self {
         let map = Map::with_capacity_and_hasher(capacity, Default::default());
-        let strs = Vec::with_capacity(capacity);
-        Self { map, inner: RwLock::new(Inner { strs, arena: Bump::new() }), hash_builder }
+        let strs = AppendOnlyVec::with_capacity(capacity);
+        Self { map, strs, arena: Mutex::default(), hash_builder }
     }
 
     /// Returns the number of unique strings in the interner.
     #[inline]
     pub fn len(&self) -> usize {
-        self.inner.read().strs.len()
+        self.strs.len()
     }
 
     /// Returns `true` if the interner is empty.
@@ -217,7 +218,7 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
         self.do_intern_mut(s, no_alloc)
     }
 
-    /// Maps a `Symbol` to its string.
+    /// Maps a `Symbol` to its string. This is a cheap, lock-free operation.
     ///
     /// # Panics
     ///
@@ -225,7 +226,7 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
     /// created by this `Interner`.
     #[inline]
     pub fn resolve(&self, sym: S) -> &str {
-        unsafe { self.inner.read().strs.get_unchecked(sym.to_usize()) }
+        unsafe { self.strs.get_unchecked(sym.to_usize()) }
     }
 
     #[inline]
@@ -242,9 +243,14 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
         let shard = &mut *shard.write();
         match shard.entry(hash, eq, hasher) {
             hashbrown::hash_table::Entry::Occupied(e) => e.get().1,
-            hashbrown::hash_table::Entry::Vacant(e) => {
-                insert_vacant(&mut self.inner.write(), s, hash, e, alloc)
-            }
+            hashbrown::hash_table::Entry::Vacant(e) => insert_vacant(
+                &self.strs,
+                &mut self.arena.lock().unwrap_or_else(PoisonError::into_inner),
+                s,
+                hash,
+                e,
+                alloc,
+            ),
         }
     }
 
@@ -255,9 +261,14 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
         let shard = &mut *self.map.shards_mut()[shard_idx];
         match shard.get_mut().entry(hash, mk_eq(s), hasher) {
             hashbrown::hash_table::Entry::Occupied(e) => e.get().1,
-            hashbrown::hash_table::Entry::Vacant(e) => {
-                insert_vacant(self.inner.get_mut(), s, hash, e, alloc)
-            }
+            hashbrown::hash_table::Entry::Vacant(e) => insert_vacant(
+                &self.strs,
+                self.arena.get_mut().unwrap_or_else(PoisonError::into_inner),
+                s,
+                hash,
+                e,
+                alloc,
+            ),
         }
     }
 
@@ -282,15 +293,16 @@ impl std::hash::Hasher for NoHasher {
 
 #[inline]
 fn insert_vacant<S: InternerSymbol>(
-    inner: &mut Inner,
+    strs: &AppendOnlyVec<&'static str>,
+    arena: &mut Bump,
     s: &str,
     hash: u64,
     e: hashbrown::hash_table::VacantEntry<'_, RawMapKey<S>>,
     alloc: impl FnOnce(&mut Bump, &str) -> &'static str,
 ) -> S {
-    let s = alloc(&mut inner.arena, s);
-    let new_sym = S::try_from_usize(inner.strs.len()).expect("ran out of symbols");
-    inner.strs.push(s);
+    let s = alloc(arena, s);
+    let i = strs.push(s);
+    let new_sym = S::try_from_usize(i).expect("ran out of symbols");
     e.insert(((hash, s), new_sym));
     new_sym
 }
