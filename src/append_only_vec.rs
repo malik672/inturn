@@ -12,7 +12,7 @@ const POINTER_WIDTH: u8 = usize::BITS as u8;
 const BUCKETS: usize = POINTER_WIDTH as usize;
 
 /// Lock-free, append-only dynamic array.
-pub(crate) struct AppendOnlyVec<T: Send> {
+pub(crate) struct AppendOnlyVec<T> {
     /// The `n`th bucket contains `2^n` elements. Each bucket is lazily allocated.
     buckets: Box<[AtomicPtr<Entry<T>>; BUCKETS]>,
     /// The total number of elements.
@@ -35,15 +35,16 @@ impl<T> Drop for Entry<T> {
     }
 }
 
+unsafe impl<T: Send> Send for AppendOnlyVec<T> {}
 unsafe impl<T: Send> Sync for AppendOnlyVec<T> {}
 
-impl<T: Send> Default for AppendOnlyVec<T> {
+impl<T> Default for AppendOnlyVec<T> {
     fn default() -> AppendOnlyVec<T> {
         AppendOnlyVec::new()
     }
 }
 
-impl<T: Send> Drop for AppendOnlyVec<T> {
+impl<T> Drop for AppendOnlyVec<T> {
     fn drop(&mut self) {
         for (i, bucket) in self.buckets.iter_mut().enumerate() {
             let bucket_ptr = *bucket.get_mut();
@@ -55,7 +56,7 @@ impl<T: Send> Drop for AppendOnlyVec<T> {
     }
 }
 
-impl<T: Send> AppendOnlyVec<T> {
+impl<T> AppendOnlyVec<T> {
     pub(crate) fn new() -> AppendOnlyVec<T> {
         let buckets = Box::new([const { AtomicPtr::<Entry<T>>::new(ptr::null_mut()) }; BUCKETS]);
         Self { buckets, len: AtomicUsize::new(0) }
@@ -244,6 +245,21 @@ mod tests {
         assert_eq!(V::with_capacity(7).count_buckets(), 3);
 
         assert_eq!(V::with_capacity(8).count_buckets(), 4);
+    }
+
+    #[test]
+    fn non_send() {
+        use std::cell::Cell;
+
+        type V = AppendOnlyVec<Cell<u32>>;
+
+        let v = V::new();
+        assert_eq!(v.len(), 0);
+        v.push(Cell::new(42));
+        assert_eq!(v.len(), 1);
+        assert_eq!(v.get(0).unwrap().get(), 42);
+        v.get(0).unwrap().set(1);
+        assert_eq!(v.get(0).unwrap().get(), 1);
     }
 
     #[test]
