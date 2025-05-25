@@ -73,7 +73,7 @@ impl<T: Send> AppendOnlyVec<T> {
     }
 
     pub(crate) fn push(&self, value: T) -> usize {
-        let i = self.len.fetch_add(1, Ordering::Relaxed);
+        let i = self.len.fetch_add(1, Ordering::AcqRel);
         let Indexes { bucket, index, bucket_size } = indexes(i);
 
         let bucket_atomic_ptr = unsafe { self.buckets.get_unchecked(bucket) };
@@ -168,7 +168,7 @@ fn allocate_bucket<T>(size: usize) -> *mut Entry<T> {
 }
 
 unsafe fn deallocate_bucket<T>(bucket: *mut Entry<T>, size: usize) {
-    let _ = Box::from_raw(std::ptr::slice_from_raw_parts_mut(bucket, size));
+    let _ = Box::from_raw(ptr::slice_from_raw_parts_mut(bucket, size));
 }
 
 #[cfg(test)]
