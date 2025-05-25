@@ -401,4 +401,26 @@ mod tests {
 
         assert_eq!(interner.map.len(), n_threads * symbols_per_thread);
     }
+
+    #[test]
+    fn hash_collision() {
+        #[derive(Default)]
+        struct MyBadHasher;
+        impl std::hash::Hasher for MyBadHasher {
+            fn finish(&self) -> u64 {
+                4 // Chosen by fair dice roll.
+            }
+            fn write(&mut self, _bytes: &[u8]) {}
+        }
+
+        let interner = Interner::<Symbol, _>::with_hasher(std::hash::BuildHasherDefault::<
+            MyBadHasher,
+        >::default());
+        let hello = interner.intern("hello");
+        let world = interner.intern("world");
+        assert_eq!(hello.get(), 0);
+        assert_eq!(world.get(), 1);
+        assert_eq!(interner.resolve(hello), "hello");
+        assert_eq!(interner.resolve(world), "world");
+    }
 }
