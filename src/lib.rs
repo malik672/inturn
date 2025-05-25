@@ -8,8 +8,8 @@ use hashbrown::hash_table;
 use std::{collections::hash_map::RandomState, hash::BuildHasher, num::NonZeroU32};
 use thread_local::ThreadLocal;
 
-mod append_only_vec;
-use append_only_vec::AppendOnlyVec;
+mod lock_free_stack;
+use lock_free_stack::LFStack;
 
 /// Default unique identifier for a string in an [`Interner`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -118,7 +118,7 @@ type RawMapKey<S> = (MapKey, S);
 /// See the [module docs][self] for more details.
 pub struct Interner<S = Symbol, H = RandomState> {
     map: Map<S>,
-    strs: AppendOnlyVec<&'static str>,
+    strs: LFStack<&'static str>,
     arena: Box<ThreadLocal<Bump>>,
     hash_builder: H,
 }
@@ -154,7 +154,7 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
     /// Creates a new `Interner` with the given capacitiy and custom hasher.
     pub fn with_capacity_and_hasher(capacity: usize, hash_builder: H) -> Self {
         let map = Map::with_capacity_and_hasher(capacity, Default::default());
-        let strs = AppendOnlyVec::with_capacity(capacity);
+        let strs = LFStack::with_capacity(capacity);
         Self { map, strs, arena: Box::default(), hash_builder }
     }
 
@@ -272,7 +272,7 @@ impl std::hash::Hasher for NoHasher {
 
 #[inline]
 fn insert<S: InternerSymbol>(
-    strs: &AppendOnlyVec<&'static str>,
+    strs: &LFStack<&'static str>,
     arena: &ThreadLocal<Bump>,
     s: &str,
     hash: u64,

@@ -11,8 +11,8 @@ const POINTER_WIDTH: u8 = usize::BITS as u8;
 /// All buckets combined can hold up to `2^POINTER_WIDTH - 1` entries.
 const BUCKETS: usize = POINTER_WIDTH as usize;
 
-/// Lock-free, append-only dynamic array.
-pub(crate) struct AppendOnlyVec<T> {
+/// A non-contiguous, lock-free, concurrent, growable stack.
+pub(crate) struct LFStack<T> {
     /// The `n`th bucket contains `2^n` elements. Each bucket is lazily allocated.
     buckets: Box<[AtomicPtr<Entry<T>>; BUCKETS]>,
     /// The total number of elements.
@@ -28,23 +28,26 @@ struct Entry<T> {
 }
 
 impl<T> Drop for Entry<T> {
+    #[allow(clippy::collapsible_if)]
     fn drop(&mut self) {
-        if *self.present.get_mut() {
-            unsafe { ptr::drop_in_place(self.value.get_mut().as_mut_ptr()) };
+        if std::mem::needs_drop::<T>() {
+            if *self.present.get_mut() {
+                unsafe { ptr::drop_in_place(self.value.get_mut().as_mut_ptr()) };
+            }
         }
     }
 }
 
-unsafe impl<T: Send> Send for AppendOnlyVec<T> {}
-unsafe impl<T: Send> Sync for AppendOnlyVec<T> {}
+unsafe impl<T: Send> Send for LFStack<T> {}
+unsafe impl<T: Send> Sync for LFStack<T> {}
 
-impl<T> Default for AppendOnlyVec<T> {
-    fn default() -> AppendOnlyVec<T> {
-        AppendOnlyVec::new()
+impl<T> Default for LFStack<T> {
+    fn default() -> LFStack<T> {
+        LFStack::new()
     }
 }
 
-impl<T> Drop for AppendOnlyVec<T> {
+impl<T> Drop for LFStack<T> {
     fn drop(&mut self) {
         for (i, bucket) in self.buckets.iter_mut().enumerate() {
             let bucket_ptr = *bucket.get_mut();
@@ -56,13 +59,15 @@ impl<T> Drop for AppendOnlyVec<T> {
     }
 }
 
-impl<T> AppendOnlyVec<T> {
-    pub(crate) fn new() -> AppendOnlyVec<T> {
+impl<T> LFStack<T> {
+    /// Creates a new, empty stack.
+    pub(crate) fn new() -> LFStack<T> {
         let buckets = Box::new([const { AtomicPtr::<Entry<T>>::new(ptr::null_mut()) }; BUCKETS]);
         Self { buckets, len: AtomicUsize::new(0) }
     }
 
-    pub(crate) fn with_capacity(capacity: usize) -> AppendOnlyVec<T> {
+    /// Creates a new stack with the specified capacity.
+    pub(crate) fn with_capacity(capacity: usize) -> LFStack<T> {
         let mut this = Self::new();
         let buckets = n_buckets(capacity);
         for (i, bucket) in this.buckets[..buckets].iter_mut().enumerate() {
@@ -71,12 +76,13 @@ impl<T> AppendOnlyVec<T> {
         this
     }
 
-    /// Returns the length of the vector.
+    /// Returns the length of the stack.
     #[inline]
     pub(crate) fn len(&self) -> usize {
         self.len.load(Ordering::Relaxed)
     }
 
+    /// Pushes a new value onto the stack, returning its index.
     #[inline]
     pub(crate) fn push(&self, value: T) -> usize {
         let i = self.len.fetch_add(1, Ordering::AcqRel);
@@ -85,14 +91,14 @@ impl<T> AppendOnlyVec<T> {
         let bucket_atomic_ptr = unsafe { self.buckets.get_unchecked(bucket) };
         let bucket_ptr = bucket_atomic_ptr.load(Ordering::Acquire);
 
-        // If the bucket doesn't already exist, we need to allocate it
+        // If the bucket doesn't already exist, we need to allocate it.
         let bucket_ptr = if bucket_ptr.is_null() {
             Self::allocate_bucket_cold(bucket_atomic_ptr, bucket_size)
         } else {
             bucket_ptr
         };
 
-        // Insert the new element into the bucket
+        // Insert the new element into the bucket.
         let entry = unsafe { &*bucket_ptr.add(index) };
         let value_ptr = entry.value.get();
         unsafe { value_ptr.write(MaybeUninit::new(value)) };
@@ -122,6 +128,7 @@ impl<T> AppendOnlyVec<T> {
         }
     }
 
+    /// Returns a reference to the element at the given index, or `None` if out of bounds.
     #[inline]
     pub(crate) fn get(&self, index: usize) -> Option<&T> {
         let Indexes { bucket, index, bucket_size: _ } = indexes(index);
@@ -139,6 +146,11 @@ impl<T> AppendOnlyVec<T> {
         }
     }
 
+    /// Retrieves a reference to the value at the given index, without bounds checking.
+    ///
+    /// # Safety
+    ///
+    /// `index` must be less than the length of the stack.
     #[inline]
     pub(crate) unsafe fn get_unchecked(&self, index: usize) -> &T {
         #[cfg(debug_assertions)]
@@ -152,6 +164,7 @@ impl<T> AppendOnlyVec<T> {
     #[cfg(test)]
     fn count_buckets(&self) -> usize {
         let n = self.buckets.iter().take_while(|b| !b.load(Ordering::Relaxed).is_null()).count();
+        #[cfg(debug_assertions)]
         for bucket in &self.buckets[n..] {
             assert!(bucket.load(Ordering::Relaxed).is_null(), "discontiguous buckets");
         }
@@ -209,7 +222,7 @@ mod tests {
 
     #[test]
     fn basic() {
-        let vec = AppendOnlyVec::new();
+        let vec = LFStack::new();
         let mut len = 0;
         assert_eq!(vec.len(), len);
 
@@ -229,7 +242,7 @@ mod tests {
 
     #[test]
     fn correct_capacity() {
-        type V = AppendOnlyVec<u32>;
+        type V = LFStack<u32>;
 
         assert_eq!(V::new().count_buckets(), 0);
         assert_eq!(V::with_capacity(0).count_buckets(), 0);
@@ -251,7 +264,7 @@ mod tests {
     fn non_send() {
         use std::cell::Cell;
 
-        type V = AppendOnlyVec<Cell<u32>>;
+        type V = LFStack<Cell<u32>>;
 
         let v = V::new();
         assert_eq!(v.len(), 0);
