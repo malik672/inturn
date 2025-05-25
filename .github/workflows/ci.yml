@@ -29,6 +29,17 @@ jobs:
       - run: cargo build
       - run: cargo test
 
+  miri:
+    name: Miri
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MIRIFLAGS: -Zmiri-strict-provenance
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@miri
+      - run: cargo miri test
+
   feature-checks:
     name: feature checks
     runs-on: ubuntu-latest

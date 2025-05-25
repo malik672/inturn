@@ -54,6 +54,10 @@ impl Symbol {
     }
 
     /// Creates a new `Symbol` from a `u32` without checking if it is valid.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `id` is less than `u32::MAX`.
     #[inline]
     pub unsafe fn new_unchecked(id: u32) -> Self {
         Self(unsafe { NonZeroU32::new_unchecked(id.unchecked_add(1)) })
@@ -378,6 +382,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "too slow")]
     fn mt() {
         let interner = Interner::new();
         let symbols_per_thread = 5000;
