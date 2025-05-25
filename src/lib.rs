@@ -230,13 +230,13 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
     fn do_intern(&self, s: &str, alloc: impl FnOnce(&Bump, &str) -> &'static str) -> S {
         let hash = self.hash(s);
         let shard_idx = self.map.determine_shard(hash as usize);
-        let shard = &*self.map.shards()[shard_idx];
+        let mut shard = self.map.shards()[shard_idx].upgradable_read();
 
-        if let Some((_, sym)) = shard.read().find(hash, mk_eq(s)) {
+        if let Some((_, sym)) = shard.find(hash, mk_eq(s)) {
             return *sym;
         }
 
-        insert(&self.strs, &self.arena, s, hash, &mut *shard.write(), alloc)
+        shard.with_upgraded(|shard| insert(&self.strs, &self.arena, s, hash, shard, alloc))
     }
 
     #[inline]
