@@ -120,7 +120,7 @@ impl<T: Send> AppendOnlyVec<T> {
         unsafe {
             let entry = &*bucket_ptr.add(index);
             if entry.present.load(Ordering::Relaxed) {
-                Some(&*(&*entry.value.get()).as_ptr())
+                Some(&*(*entry.value.get()).as_ptr())
             } else {
                 None
             }

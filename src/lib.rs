@@ -4,12 +4,9 @@
 
 use bumpalo::Bump;
 use dashmap::DashMap;
-use std::{
-    collections::hash_map::RandomState,
-    hash::BuildHasher,
-    num::NonZeroU32,
-    sync::{Mutex, PoisonError},
-};
+use hashbrown::hash_table;
+use std::{collections::hash_map::RandomState, hash::BuildHasher, num::NonZeroU32};
+use thread_local::ThreadLocal;
 
 mod append_only_vec;
 use append_only_vec::AppendOnlyVec;
@@ -122,7 +119,7 @@ type RawMapKey<S> = (MapKey, S);
 pub struct Interner<S = Symbol, H = RandomState> {
     map: Map<S>,
     strs: AppendOnlyVec<&'static str>,
-    arena: Mutex<Bump>,
+    arena: Box<ThreadLocal<Bump>>,
     hash_builder: H,
 }
 
@@ -158,7 +155,7 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
     pub fn with_capacity_and_hasher(capacity: usize, hash_builder: H) -> Self {
         let map = Map::with_capacity_and_hasher(capacity, Default::default());
         let strs = AppendOnlyVec::with_capacity(capacity);
-        Self { map, strs, arena: Mutex::default(), hash_builder }
+        Self { map, strs, arena: Box::default(), hash_builder }
     }
 
     /// Returns the number of unique strings in the interner.
@@ -230,46 +227,25 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
     }
 
     #[inline]
-    fn do_intern(&self, s: &str, alloc: impl FnOnce(&mut Bump, &str) -> &'static str) -> S {
+    fn do_intern(&self, s: &str, alloc: impl FnOnce(&Bump, &str) -> &'static str) -> S {
         let hash = self.hash(s);
         let shard_idx = self.map.determine_shard(hash as usize);
         let shard = &*self.map.shards()[shard_idx];
-        let eq = mk_eq(s);
 
-        if let Some((_, sym)) = shard.read().find(hash, eq) {
+        if let Some((_, sym)) = shard.read().find(hash, mk_eq(s)) {
             return *sym;
         }
 
-        let shard = &mut *shard.write();
-        match shard.entry(hash, eq, hasher) {
-            hashbrown::hash_table::Entry::Occupied(e) => e.get().1,
-            hashbrown::hash_table::Entry::Vacant(e) => insert_vacant(
-                &self.strs,
-                &mut self.arena.lock().unwrap_or_else(PoisonError::into_inner),
-                s,
-                hash,
-                e,
-                alloc,
-            ),
-        }
+        insert(&self.strs, &self.arena, s, hash, &mut *shard.write(), alloc)
     }
 
     #[inline]
-    fn do_intern_mut(&mut self, s: &str, alloc: impl FnOnce(&mut Bump, &str) -> &'static str) -> S {
+    fn do_intern_mut(&mut self, s: &str, alloc: impl FnOnce(&Bump, &str) -> &'static str) -> S {
         let hash = self.hash(s);
         let shard_idx = self.map.determine_shard(hash as usize);
         let shard = &mut *self.map.shards_mut()[shard_idx];
-        match shard.get_mut().entry(hash, mk_eq(s), hasher) {
-            hashbrown::hash_table::Entry::Occupied(e) => e.get().1,
-            hashbrown::hash_table::Entry::Vacant(e) => insert_vacant(
-                &self.strs,
-                self.arena.get_mut().unwrap_or_else(PoisonError::into_inner),
-                s,
-                hash,
-                e,
-                alloc,
-            ),
-        }
+
+        insert(&self.strs, &self.arena, s, hash, shard.get_mut(), alloc)
     }
 
     #[inline]
@@ -292,19 +268,24 @@ impl std::hash::Hasher for NoHasher {
 }
 
 #[inline]
-fn insert_vacant<S: InternerSymbol>(
+fn insert<S: InternerSymbol>(
     strs: &AppendOnlyVec<&'static str>,
-    arena: &mut Bump,
+    arena: &ThreadLocal<Bump>,
     s: &str,
     hash: u64,
-    e: hashbrown::hash_table::VacantEntry<'_, RawMapKey<S>>,
-    alloc: impl FnOnce(&mut Bump, &str) -> &'static str,
+    shard: &mut hash_table::HashTable<RawMapKey<S>>,
+    alloc: impl FnOnce(&Bump, &str) -> &'static str,
 ) -> S {
-    let s = alloc(arena, s);
-    let i = strs.push(s);
-    let new_sym = S::try_from_usize(i).expect("ran out of symbols");
-    e.insert(((hash, s), new_sym));
-    new_sym
+    match shard.entry(hash, mk_eq(s), hasher) {
+        hash_table::Entry::Occupied(e) => e.get().1,
+        hash_table::Entry::Vacant(e) => {
+            let s = alloc(arena.get_or_default(), s);
+            let i = strs.push(s);
+            let new_sym = S::try_from_usize(i).expect("ran out of symbols");
+            e.insert(((hash, s), new_sym));
+            new_sym
+        }
+    }
 }
 
 #[inline]
@@ -318,13 +299,13 @@ fn mk_eq<S>(s: &str) -> impl Fn(&RawMapKey<S>) -> bool + Copy + '_ {
 }
 
 #[inline]
-fn alloc(arena: &mut Bump, s: &str) -> &'static str {
-    // SAFETY: extends the lifetime of `&mut Bump` to `'static`. This is never exposed so it's ok.
+fn alloc(arena: &Bump, s: &str) -> &'static str {
+    // SAFETY: extends the lifetime of `&Bump` to `'static`. This is never exposed so it's ok.
     unsafe { std::mem::transmute::<&str, &'static str>(arena.alloc_str(s)) }
 }
 
 #[inline]
-fn no_alloc(_: &mut Bump, s: &str) -> &'static str {
+fn no_alloc(_: &Bump, s: &str) -> &'static str {
     // SAFETY: `s` outlives `Bump`, so we don't need to allocate it. See above.
     unsafe { std::mem::transmute::<&str, &'static str>(s) }
 }
