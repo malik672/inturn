@@ -43,8 +43,9 @@ impl Symbol {
     ///
     /// Panics if `id` is greater than or equal to `u32::MAX`.
     #[inline]
+    #[track_caller]
     pub fn from_usize(id: usize) -> Self {
-        Self::try_from_usize(id).unwrap()
+        <Self as InternerSymbol>::from_usize(id)
     }
 
     /// Tries to create a new `Symbol` from a `usize`.
@@ -88,6 +89,17 @@ pub trait InternerSymbol: Sized + Copy + std::hash::Hash + Eq {
     /// Tries to create a new `Symbol` from a `usize`.
     fn try_from_usize(id: usize) -> Option<Self>;
 
+    /// Creates a new `Symbol` from a `usize`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` is an invalid index for `Self`.
+    #[inline]
+    #[track_caller]
+    fn from_usize(id: usize) -> Self {
+        Self::try_from_usize(id).expect("invalid index")
+    }
+
     /// Converts the `Symbol` to a `usize`.
     fn to_usize(self) -> usize;
 }
@@ -113,13 +125,16 @@ type Map<S> = DashMap<MapKey, S, NoHasherBuilder>;
 type MapKey = (u64, &'static str);
 type RawMapKey<S> = (MapKey, S);
 
+// TODO: Use a lock-free arena.
+type Arena = ThreadLocal<Bump>;
+
 /// String interner.
 ///
 /// See the [module docs][self] for more details.
 pub struct Interner<S = Symbol, H = RandomState> {
     map: Map<S>,
     strs: LFStack<&'static str>,
-    arena: Box<ThreadLocal<Bump>>,
+    arena: Box<Arena>,
     hash_builder: H,
 }
 
@@ -155,7 +170,7 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
     pub fn with_capacity_and_hasher(capacity: usize, hash_builder: H) -> Self {
         let map = Map::with_capacity_and_hasher(capacity, Default::default());
         let strs = LFStack::with_capacity(capacity);
-        Self { map, strs, arena: Box::default(), hash_builder }
+        Self { map, strs, arena: Default::default(), hash_builder }
     }
 
     /// Returns the number of unique strings in the interner.
@@ -168,6 +183,20 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Returns an iterator over the interned strings and their corresponding `Symbol`s.
+    ///
+    /// Does not guarantee that it includes symbols added after the iterator was created.
+    #[inline]
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = (S, &str)> + Clone {
+        self.all_symbols().map(|s| (s, self.resolve(s)))
+    }
+
+    /// Returns an iterator over all symbols in the interner.
+    #[inline]
+    pub fn all_symbols(&self) -> impl ExactSizeIterator<Item = S> + Send + Sync + Clone {
+        (0..self.len()).map(S::from_usize)
     }
 
     /// Interns a string, returning its unique `Symbol`.
@@ -218,12 +247,13 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
     /// Panics if `Symbol` is out of bounds of this `Interner`. You should only use `Symbol`s
     /// created by this `Interner`.
     #[inline]
+    #[must_use]
     pub fn resolve(&self, sym: S) -> &str {
         unsafe { self.strs.get_unchecked(sym.to_usize()) }
     }
 
     #[inline]
-    fn do_intern(&self, s: &str, alloc: impl FnOnce(&Bump, &str) -> &'static str) -> S {
+    fn do_intern(&self, s: &str, alloc: impl FnOnce(&Arena, &str) -> &'static str) -> S {
         let hash = self.hash(s);
         let shard_idx = self.map.determine_shard(hash as usize);
         let shard = &*self.map.shards()[shard_idx];
@@ -236,7 +266,7 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
     }
 
     #[inline]
-    fn do_intern_mut(&mut self, s: &str, alloc: impl FnOnce(&Bump, &str) -> &'static str) -> S {
+    fn do_intern_mut(&mut self, s: &str, alloc: impl FnOnce(&Arena, &str) -> &'static str) -> S {
         let hash = self.hash(s);
         let shard_idx = self.map.determine_shard(hash as usize);
         let shard = &mut *self.map.shards_mut()[shard_idx];
@@ -273,11 +303,11 @@ impl std::hash::Hasher for NoHasher {
 #[inline]
 fn insert<S: InternerSymbol>(
     strs: &LFStack<&'static str>,
-    arena: &ThreadLocal<Bump>,
+    arena: &Arena,
     s: &str,
     hash: u64,
     shard: &mut hash_table::HashTable<RawMapKey<S>>,
-    alloc: impl FnOnce(&Bump, &str) -> &'static str,
+    alloc: impl FnOnce(&Arena, &str) -> &'static str,
 ) -> S {
     match shard.entry(hash, mk_eq(s), hasher) {
         hash_table::Entry::Occupied(e) => {
@@ -285,9 +315,9 @@ fn insert<S: InternerSymbol>(
             e.get().1
         }
         hash_table::Entry::Vacant(e) => {
-            let s = alloc(arena.get_or_default(), s);
+            let s = alloc(arena, s);
             let i = strs.push(s);
-            let new_sym = S::try_from_usize(i).expect("ran out of symbols");
+            let new_sym = S::from_usize(i);
             e.insert(((hash, s), new_sym));
             new_sym
         }
@@ -305,14 +335,14 @@ fn mk_eq<S>(s: &str) -> impl Fn(&RawMapKey<S>) -> bool + Copy + '_ {
 }
 
 #[inline]
-fn alloc(arena: &Bump, s: &str) -> &'static str {
-    // SAFETY: extends the lifetime of `&Bump` to `'static`. This is never exposed so it's ok.
-    unsafe { std::mem::transmute::<&str, &'static str>(arena.alloc_str(s)) }
+fn alloc(arena: &Arena, s: &str) -> &'static str {
+    // SAFETY: extends the lifetime of `&Arena` to `'static`. This is never exposed so it's ok.
+    unsafe { std::mem::transmute::<&str, &'static str>(arena.get_or_default().alloc_str(s)) }
 }
 
 #[inline]
-fn no_alloc(_: &Bump, s: &str) -> &'static str {
-    // SAFETY: `s` outlives `Bump`, so we don't need to allocate it. See above.
+fn no_alloc(_: &Arena, s: &str) -> &'static str {
+    // SAFETY: `s` outlives `arena`, so we don't need to allocate it. See above.
     unsafe { std::mem::transmute::<&str, &'static str>(s) }
 }
 
@@ -381,11 +411,14 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "too slow")]
     fn mt() {
         let interner = Interner::new();
-        let symbols_per_thread = 5000;
-        let n_threads = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(4);
+        let symbols_per_thread = if cfg!(miri) { 5 } else { 5000 };
+        let n_threads = if cfg!(miri) {
+            2
+        } else {
+            std::thread::available_parallelism().map_or(4, usize::from)
+        };
 
         std::thread::scope(|scope| {
             let intern_many = |salt: usize| {

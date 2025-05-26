@@ -82,6 +82,15 @@ impl<T> LFStack<T> {
         self.len.load(Ordering::Relaxed)
     }
 
+    /// Returns an iterator over the elements in the stack.
+    ///
+    /// Does not account for pushes that happen after the iterator is created.
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = &T> + Clone {
+        (0..self.len()).map(move |i| unsafe { self.get_unchecked(i) })
+    }
+
     /// Pushes a new value onto the stack, returning its index.
     #[inline]
     pub(crate) fn push(&self, value: T) -> usize {
@@ -276,6 +285,17 @@ mod tests {
     }
 
     #[test]
+    fn non_copy() {
+        type V = LFStack<String>;
+
+        let v = V::new();
+        assert_eq!(v.len(), 0);
+        v.push("Hello".to_string());
+        assert_eq!(v.len(), 1);
+        assert_eq!(v.get(0).unwrap(), "Hello");
+    }
+
+    #[test]
     fn test_indexes() {
         assert_eq!(indexes(0), Indexes { bucket: 0, index: 0, bucket_size: 1 });
 
@@ -297,5 +317,22 @@ mod tests {
     #[should_panic]
     fn test_indexes_oob() {
         indexes(usize::MAX);
+    }
+
+    #[test]
+    fn test_n_buckets() {
+        assert_eq!(n_buckets(0), 0);
+
+        assert_eq!(n_buckets(1), 1);
+
+        assert_eq!(n_buckets(2), 2);
+        assert_eq!(n_buckets(3), 2);
+
+        assert_eq!(n_buckets(4), 3);
+        assert_eq!(n_buckets(5), 3);
+        assert_eq!(n_buckets(6), 3);
+        assert_eq!(n_buckets(7), 3);
+
+        assert_eq!(n_buckets(8), 4);
     }
 }
