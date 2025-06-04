@@ -240,6 +240,59 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
         self.do_intern_mut(s, no_alloc)
     }
 
+    /// Interns multiple strings.
+    ///
+    /// Allocates the strings internally if they are not already interned.
+    ///
+    /// If the strings outlive `self`, like `&'static str`, prefer using
+    /// [`intern_many_static`](Self::intern_many_static), as it will not allocate the strings on the
+    /// heap.
+    pub fn intern_many<'a>(&self, strings: impl IntoIterator<Item = &'a str>) {
+        for s in strings {
+            self.intern(s);
+        }
+    }
+
+    /// Interns multiple strings.
+    ///
+    /// Allocates the strings internally if they are not already interned.
+    ///
+    /// If the strings outlive `self`, like `&'static str`, prefer using
+    /// [`intern_many_mut_static`](Self::intern_many_mut_static), as it will not allocate the
+    /// strings on the heap.
+    ///
+    /// By taking `&mut self`, this never acquires any locks.
+    pub fn intern_many_mut<'a>(&mut self, strings: impl IntoIterator<Item = &'a str>) {
+        for s in strings {
+            self.intern_mut(s);
+        }
+    }
+
+    /// Interns multiple static strings.
+    ///
+    /// Note that this only requires that the strings outlive `self`, which means we can avoid
+    /// allocating the strings.
+    pub fn intern_many_static<'a, 'b: 'a>(&'a self, strings: impl IntoIterator<Item = &'b str>) {
+        for s in strings {
+            self.intern_static(s);
+        }
+    }
+
+    /// Interns multiple static strings.
+    ///
+    /// Note that this only requires that the strings outlive `self`, which means we can avoid
+    /// allocating the strings.
+    ///
+    /// By taking `&mut self`, this never acquires any locks.
+    pub fn intern_many_mut_static<'a, 'b: 'a>(
+        &'a mut self,
+        strings: impl IntoIterator<Item = &'b str>,
+    ) {
+        for s in strings {
+            self.intern_mut_static(s);
+        }
+    }
+
     /// Maps a `Symbol` to its string. This is a cheap, lock-free operation.
     ///
     /// # Panics
