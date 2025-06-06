@@ -1,4 +1,4 @@
-use crate::{lock_free_stack::LFStack, InternerSymbol, Symbol};
+use crate::{InternerSymbol, Symbol, lock_free_stack::LFStack};
 use bumpalo::Bump;
 use dashmap::DashMap;
 use hashbrown::hash_table;
