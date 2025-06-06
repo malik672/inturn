@@ -3,8 +3,7 @@ use std::{collections::hash_map::RandomState, hash::BuildHasher};
 
 /// String interner.
 ///
-/// This is a thin wrapper around [`BytesInterner`][crate::BytesInterner] that uses `str` instead of
-/// `[u8]`.
+/// This is a thin wrapper around [`BytesInterner`] that uses `str` instead of `[u8]`.
 ///
 /// See the [crate-level docs][crate] for more details.
 pub struct Interner<S = Symbol, H = RandomState> {
