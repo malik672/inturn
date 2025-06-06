@@ -1,11 +1,11 @@
-# the-interner
+# inturn
 
-Efficient, thread-safe string interning.
+Efficient, performant, thread-safe bytes/string interning.
 
 ## Examples
 
 ```rust
-use the_interner::Interner;
+use inturn::Interner;
 
 let interner = Interner::new();
 let hello = interner.intern("hello");
