@@ -222,7 +222,7 @@ fn allocate_bucket<T>(size: usize) -> *mut Entry<T> {
 }
 
 unsafe fn deallocate_bucket<T>(bucket: *mut Entry<T>, size: usize) {
-    let _ = Box::from_raw(ptr::slice_from_raw_parts_mut(bucket, size));
+    let _ = unsafe { Box::from_raw(ptr::slice_from_raw_parts_mut(bucket, size)) };
 }
 
 #[cfg(test)]

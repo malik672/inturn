@@ -2,15 +2,15 @@
 name = "inturn"
 version = "0.1.0"
 authors = ["DaniPopes <57450786+DaniPopes@users.noreply.github.com>"]
-description = "Efficient, thread-safe string interning"
-edition = "2021"
-rust-version = "1.79"
+description = "Efficient, performant, thread-safe bytes/string interning"
+edition = "2024"
+rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 categories = ["caching"]
 keywords = ["symbol", "interning", "string-interning", "hash", "cache"]
-documentation = "https://docs.rs/tbd"
-homepage = "https://github.com/danipopes/tbd"
-repository = "https://github.com/danipopes/tbd"
+documentation = "https://docs.rs/inturn"
+homepage = "https://github.com/danipopes/inturn"
+repository = "https://github.com/danipopes/inturn"
 exclude = [".github/", "benches/", "fuzz/", "tests/"]
 
 [dependencies]
