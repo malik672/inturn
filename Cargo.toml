@@ -22,6 +22,9 @@ dashmap = { version = "7.0.0-rc2", default-features = false, features = [
 hashbrown = { version = "0.15", default-features = false }
 thread_local = "1.1.8"
 
+[features]
+nightly = ["thread_local/nightly"]
+
 [profile.release]
 lto = "thin"
 panic = "abort"
