@@ -1,41 +1,40 @@
+use crate::{lock_free_stack::LFStack, InternerSymbol, Symbol};
 use bumpalo::Bump;
 use dashmap::DashMap;
 use hashbrown::hash_table;
 use std::{collections::hash_map::RandomState, hash::BuildHasher};
 use thread_local::ThreadLocal;
 
-use crate::{lock_free_stack::LFStack, InternerSymbol, Symbol};
-
-/// `str -> Symbol` interner.
+/// `[u8] -> Symbol` interner.
 /// The hash is also stored to avoid double hashing.
 ///
 /// This uses `NoHasher` because we want to store the `hash_builder`
 /// outside of the lock, and to avoid hashing twice on insertion.
-type Map<S> = DashMap<MapKey, S, NoHasherBuilder>;
-type MapKey = (u64, &'static str);
-type RawMapKey<S> = (MapKey, S);
+pub(crate) type Map<S> = DashMap<MapKey, S, NoHasherBuilder>;
+pub(crate) type MapKey = (u64, &'static [u8]);
+pub(crate) type RawMapKey<S> = (MapKey, S);
 
 // TODO: Use a lock-free arena.
 type Arena = ThreadLocal<Bump>;
 
-/// String interner.
+/// Byte string interner.
 ///
-/// See the [module docs][self] for more details.
-pub struct Interner<S = Symbol, H = RandomState> {
-    map: Map<S>,
-    strs: LFStack<&'static str>,
+/// See the [crate-level docs][crate] for more details.
+pub struct BytesInterner<S = Symbol, H = RandomState> {
+    pub(crate) map: Map<S>,
+    strs: LFStack<&'static [u8]>,
     arena: Box<Arena>,
     hash_builder: H,
 }
 
-impl Default for Interner {
+impl Default for BytesInterner {
     #[inline]
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Interner<Symbol, RandomState> {
+impl BytesInterner<Symbol, RandomState> {
     /// Creates a new, empty `Interner` with the default symbol and hasher.
     #[inline]
     pub fn new() -> Self {
@@ -49,7 +48,7 @@ impl Interner<Symbol, RandomState> {
     }
 }
 
-impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
+impl<S: InternerSymbol, H: BuildHasher> BytesInterner<S, H> {
     /// Creates a new `Interner` with the given custom hasher.
     #[inline]
     pub fn with_hasher(hash_builder: H) -> Self {
@@ -79,7 +78,7 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
     ///
     /// Does not guarantee that it includes symbols added after the iterator was created.
     #[inline]
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = (S, &str)> + Clone {
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = (S, &[u8])> + Clone {
         self.all_symbols().map(|s| (s, self.resolve(s)))
     }
 
@@ -93,9 +92,9 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
     ///
     /// Allocates the string internally if it is not already interned.
     ///
-    /// If `s` outlives `self`, like `&'static str`, prefer using
+    /// If `s` outlives `self`, like `&'static [u8]`, prefer using
     /// [`intern_static`](Self::intern_static), as it will not allocate the string on the heap.
-    pub fn intern(&self, s: &str) -> S {
+    pub fn intern(&self, s: &[u8]) -> S {
         self.do_intern(s, alloc)
     }
 
@@ -103,12 +102,12 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
     ///
     /// Allocates the string internally if it is not already interned.
     ///
-    /// If `s` outlives `self`, like `&'static str`, prefer using
+    /// If `s` outlives `self`, like `&'static [u8]`, prefer using
     /// [`intern_mut_static`](Self::intern_mut_static), as it will not allocate the string on the
     /// heap.
     ///
     /// By taking `&mut self`, this never acquires any locks.
-    pub fn intern_mut(&mut self, s: &str) -> S {
+    pub fn intern_mut(&mut self, s: &[u8]) -> S {
         self.do_intern_mut(s, alloc)
     }
 
@@ -116,7 +115,7 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
     ///
     /// Note that this only requires that `s` outlives `self`, which means we can avoid allocating
     /// the string.
-    pub fn intern_static<'a, 'b: 'a>(&'a self, s: &'b str) -> S {
+    pub fn intern_static<'a, 'b: 'a>(&'a self, s: &'b [u8]) -> S {
         self.do_intern(s, no_alloc)
     }
 
@@ -126,7 +125,7 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
     /// the string.
     ///
     /// By taking `&mut self`, this never acquires any locks.
-    pub fn intern_mut_static<'a, 'b: 'a>(&'a mut self, s: &'b str) -> S {
+    pub fn intern_mut_static<'a, 'b: 'a>(&'a mut self, s: &'b [u8]) -> S {
         self.do_intern_mut(s, no_alloc)
     }
 
@@ -134,10 +133,10 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
     ///
     /// Allocates the strings internally if they are not already interned.
     ///
-    /// If the strings outlive `self`, like `&'static str`, prefer using
+    /// If the strings outlive `self`, like `&'static [u8]`, prefer using
     /// [`intern_many_static`](Self::intern_many_static), as it will not allocate the strings on the
     /// heap.
-    pub fn intern_many<'a>(&self, strings: impl IntoIterator<Item = &'a str>) {
+    pub fn intern_many<'a>(&self, strings: impl IntoIterator<Item = &'a [u8]>) {
         for s in strings {
             self.intern(s);
         }
@@ -147,12 +146,12 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
     ///
     /// Allocates the strings internally if they are not already interned.
     ///
-    /// If the strings outlive `self`, like `&'static str`, prefer using
+    /// If the strings outlive `self`, like `&'static [u8]`, prefer using
     /// [`intern_many_mut_static`](Self::intern_many_mut_static), as it will not allocate the
     /// strings on the heap.
     ///
     /// By taking `&mut self`, this never acquires any locks.
-    pub fn intern_many_mut<'a>(&mut self, strings: impl IntoIterator<Item = &'a str>) {
+    pub fn intern_many_mut<'a>(&mut self, strings: impl IntoIterator<Item = &'a [u8]>) {
         for s in strings {
             self.intern_mut(s);
         }
@@ -162,7 +161,7 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
     ///
     /// Note that this only requires that the strings outlive `self`, which means we can avoid
     /// allocating the strings.
-    pub fn intern_many_static<'a, 'b: 'a>(&'a self, strings: impl IntoIterator<Item = &'b str>) {
+    pub fn intern_many_static<'a, 'b: 'a>(&'a self, strings: impl IntoIterator<Item = &'b [u8]>) {
         for s in strings {
             self.intern_static(s);
         }
@@ -176,7 +175,7 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
     /// By taking `&mut self`, this never acquires any locks.
     pub fn intern_many_mut_static<'a, 'b: 'a>(
         &'a mut self,
-        strings: impl IntoIterator<Item = &'b str>,
+        strings: impl IntoIterator<Item = &'b [u8]>,
     ) {
         for s in strings {
             self.intern_mut_static(s);
@@ -191,12 +190,12 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
     /// created by this `Interner`.
     #[inline]
     #[must_use]
-    pub fn resolve(&self, sym: S) -> &str {
+    pub fn resolve(&self, sym: S) -> &[u8] {
         unsafe { self.strs.get_unchecked(sym.to_usize()) }
     }
 
     #[inline]
-    fn do_intern(&self, s: &str, alloc: impl FnOnce(&Arena, &str) -> &'static str) -> S {
+    fn do_intern(&self, s: &[u8], alloc: impl FnOnce(&Arena, &[u8]) -> &'static [u8]) -> S {
         let hash = self.hash(s);
         let shard_idx = self.map.determine_shard(hash as usize);
         let shard = &*self.map.shards()[shard_idx];
@@ -209,7 +208,7 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
     }
 
     #[inline]
-    fn do_intern_mut(&mut self, s: &str, alloc: impl FnOnce(&Arena, &str) -> &'static str) -> S {
+    fn do_intern_mut(&mut self, s: &[u8], alloc: impl FnOnce(&Arena, &[u8]) -> &'static [u8]) -> S {
         let hash = self.hash(s);
         let shard_idx = self.map.determine_shard(hash as usize);
         let shard = &mut *self.map.shards_mut()[shard_idx];
@@ -218,14 +217,18 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
     }
 
     #[inline]
-    fn hash(&self, s: &str) -> u64 {
-        self.hash_builder.hash_one(s)
+    fn hash(&self, s: &[u8]) -> u64 {
+        // We don't use `self.hash_builder.hash_one(s)` because we want to avoid hashing the length.
+        use std::hash::Hasher;
+        let mut h = self.hash_builder.build_hasher();
+        h.write(s);
+        h.finish()
     }
 }
 
-type NoHasherBuilder = std::hash::BuildHasherDefault<NoHasher>;
+pub(crate) type NoHasherBuilder = std::hash::BuildHasherDefault<NoHasher>;
 
-enum NoHasher {}
+pub(crate) enum NoHasher {}
 impl Default for NoHasher {
     #[inline]
     fn default() -> Self {
@@ -245,12 +248,12 @@ impl std::hash::Hasher for NoHasher {
 
 #[inline]
 fn insert<S: InternerSymbol>(
-    strs: &LFStack<&'static str>,
+    strs: &LFStack<&'static [u8]>,
     arena: &Arena,
-    s: &str,
+    s: &[u8],
     hash: u64,
     shard: &mut hash_table::HashTable<RawMapKey<S>>,
-    alloc: impl FnOnce(&Arena, &str) -> &'static str,
+    alloc: impl FnOnce(&Arena, &[u8]) -> &'static [u8],
 ) -> S {
     match shard.entry(hash, mk_eq(s), hasher) {
         hash_table::Entry::Occupied(e) => {
@@ -273,136 +276,20 @@ fn hasher<S>(((hash, _), _): &RawMapKey<S>) -> u64 {
 }
 
 #[inline]
-fn mk_eq<S>(s: &str) -> impl Fn(&RawMapKey<S>) -> bool + Copy + '_ {
+fn mk_eq<S>(s: &[u8]) -> impl Fn(&RawMapKey<S>) -> bool + Copy + '_ {
     move |((_, ss), _): &RawMapKey<S>| s == *ss
 }
 
 #[inline]
-fn alloc(arena: &Arena, s: &str) -> &'static str {
+fn alloc(arena: &Arena, s: &[u8]) -> &'static [u8] {
     // SAFETY: extends the lifetime of `&Arena` to `'static`. This is never exposed so it's ok.
-    unsafe { std::mem::transmute::<&str, &'static str>(arena.get_or_default().alloc_str(s)) }
+    unsafe {
+        std::mem::transmute::<&[u8], &'static [u8]>(arena.get_or_default().alloc_slice_copy(s))
+    }
 }
 
 #[inline]
-fn no_alloc(_: &Arena, s: &str) -> &'static str {
+fn no_alloc(_: &Arena, s: &[u8]) -> &'static [u8] {
     // SAFETY: `s` outlives `arena`, so we don't need to allocate it. See above.
-    unsafe { std::mem::transmute::<&str, &'static str>(s) }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const fn _assert_send_sync<T: Send + Sync>() {}
-    const _: () = _assert_send_sync::<Interner>();
-
-    macro_rules! basic {
-        ($intern:ident) => {
-            #[allow(unused_mut)]
-            let mut interner = Interner::new();
-            assert!(interner.map.is_empty());
-
-            let hello = interner.$intern("hello");
-            assert_eq!(hello.get(), 0);
-            assert_eq!(interner.resolve(hello), "hello");
-            assert_eq!(interner.len(), 1);
-
-            let world = interner.$intern("world");
-            assert_eq!(world.get(), 1);
-            assert_eq!(interner.resolve(world), "world");
-            assert_eq!(interner.len(), 2);
-
-            let hello2 = interner.$intern("hello");
-            assert_eq!(hello, hello2);
-            let hello3 = interner.$intern("hello");
-            assert_eq!(hello, hello3);
-
-            let world2 = interner.$intern("world");
-            assert_eq!(world, world2);
-
-            assert_eq!(interner.len(), 2);
-
-            #[allow(unused_mut)]
-            let mut interner2 = Interner::new();
-            let prefill = &["hello", "world"];
-            for &s in prefill {
-                interner2.$intern(s);
-            }
-            assert_eq!(interner2.resolve(hello), "hello");
-            assert_eq!(interner2.resolve(world), "world");
-            assert_eq!(interner2.$intern("hello"), hello);
-            assert_eq!(interner2.$intern("world"), world);
-            assert_eq!(interner2.len(), 2);
-        };
-    }
-
-    #[test]
-    fn basic() {
-        basic!(intern);
-    }
-    #[test]
-    fn basic_mut() {
-        basic!(intern_mut);
-    }
-    #[test]
-    fn basic_static() {
-        basic!(intern_static);
-    }
-    #[test]
-    fn basic_mut_static() {
-        basic!(intern_mut_static);
-    }
-
-    #[test]
-    fn mt() {
-        let interner = Interner::new();
-        let symbols_per_thread = if cfg!(miri) { 5 } else { 5000 };
-        let n_threads = if cfg!(miri) {
-            2
-        } else {
-            std::thread::available_parallelism().map_or(4, usize::from)
-        };
-
-        std::thread::scope(|scope| {
-            let intern_many = |salt: usize| {
-                let intern_one = |i: usize| {
-                    let s = format!("hello {salt} {i}");
-                    let sym = interner.intern(&s);
-                    assert_eq!(interner.resolve(sym), s);
-                };
-                for i in 0..symbols_per_thread {
-                    intern_one(i);
-                    intern_one(i);
-                }
-            };
-            for i in 0..n_threads {
-                scope.spawn(move || intern_many(i));
-            }
-        });
-
-        assert_eq!(interner.len(), n_threads * symbols_per_thread);
-    }
-
-    #[test]
-    fn hash_collision() {
-        #[derive(Default)]
-        struct MyBadHasher;
-        impl std::hash::Hasher for MyBadHasher {
-            fn finish(&self) -> u64 {
-                4 // Chosen by fair dice roll.
-            }
-            fn write(&mut self, _bytes: &[u8]) {}
-        }
-
-        let interner = Interner::<Symbol, _>::with_hasher(std::hash::BuildHasherDefault::<
-            MyBadHasher,
-        >::default());
-        let hello = interner.intern("hello");
-        let world = interner.intern("world");
-        assert_eq!(hello.get(), 0);
-        assert_eq!(world.get(), 1);
-        assert_eq!(interner.resolve(hello), "hello");
-        assert_eq!(interner.resolve(world), "world");
-        assert_eq!(interner.len(), 2);
-    }
+    unsafe { std::mem::transmute::<&[u8], &'static [u8]>(s) }
 }
