@@ -1,5 +1,12 @@
 use std::num::NonZeroU32;
 
+#[inline(never)]
+#[cold]
+#[cfg_attr(debug_assertions, track_caller)]
+fn panic_invalid_index(id: usize) -> ! {
+    panic!("invalid InternerSymbol index: {id}");
+}
+
 /// Trait for types that can be used as symbols in an `Interner`.
 pub trait InternerSymbol: Sized + Copy + std::hash::Hash + Eq {
     /// Tries to create a new `Symbol` from a `usize`.
@@ -11,9 +18,12 @@ pub trait InternerSymbol: Sized + Copy + std::hash::Hash + Eq {
     ///
     /// Panics if `id` is an invalid index for `Self`.
     #[inline]
-    #[track_caller]
+    #[cfg_attr(debug_assertions, track_caller)]
     fn from_usize(id: usize) -> Self {
-        Self::try_from_usize(id).expect("invalid index")
+        match Self::try_from_usize(id) {
+            Some(symbol) => symbol,
+            None => panic_invalid_index(id),
+        }
     }
 
     /// Converts the `Symbol` to a `usize`.
