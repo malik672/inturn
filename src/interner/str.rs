@@ -163,6 +163,7 @@ impl<S: InternerSymbol, H: BuildHasher> Interner<S, H> {
     /// created by this `Interner`.
     #[inline]
     #[must_use]
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn resolve(&self, sym: S) -> &str {
         // SAFETY: Only `str`s are interned.
         unsafe { std::str::from_utf8_unchecked(self.inner.resolve(sym)) }

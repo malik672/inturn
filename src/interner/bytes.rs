@@ -191,8 +191,13 @@ impl<S: InternerSymbol, H: BuildHasher> BytesInterner<S, H> {
     /// created by this `Interner`.
     #[inline]
     #[must_use]
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn resolve(&self, sym: S) -> &[u8] {
-        unsafe { self.strs.get_unchecked(sym.to_usize()) }
+        if cfg!(debug_assertions) {
+            self.strs.get(sym.to_usize()).expect("symbol out of bounds")
+        } else {
+            unsafe { self.strs.get_unchecked(sym.to_usize()) }
+        }
     }
 
     #[inline]
@@ -205,7 +210,7 @@ impl<S: InternerSymbol, H: BuildHasher> BytesInterner<S, H> {
             return *v.get();
         }
 
-        insert(&self.strs, &self.arena, s, hash, cvt_mut(&mut shard.write()), alloc)
+        get_or_insert(&self.strs, &self.arena, s, hash, cvt_mut(&mut shard.write()), alloc)
     }
 
     #[inline]
@@ -214,7 +219,7 @@ impl<S: InternerSymbol, H: BuildHasher> BytesInterner<S, H> {
         let shard_idx = self.map.determine_shard(hash as usize);
         let shard = &mut *self.map.shards_mut()[shard_idx];
 
-        insert(&self.strs, &self.arena, s, hash, cvt_mut(shard.get_mut()), alloc)
+        get_or_insert(&self.strs, &self.arena, s, hash, cvt_mut(shard.get_mut()), alloc)
     }
 
     #[inline]
@@ -248,7 +253,7 @@ impl std::hash::Hasher for NoHasher {
 }
 
 #[inline]
-fn insert<S: InternerSymbol>(
+fn get_or_insert<S: InternerSymbol>(
     strs: &LFVec<&'static [u8]>,
     arena: &Arena,
     s: &[u8],
@@ -257,10 +262,7 @@ fn insert<S: InternerSymbol>(
     alloc: impl FnOnce(&Arena, &[u8]) -> &'static [u8],
 ) -> S {
     match shard.entry(hash, mk_eq(s), hasher) {
-        hash_table::Entry::Occupied(e) => {
-            // TODO: cold path
-            *e.get().1.get()
-        }
+        hash_table::Entry::Occupied(e) => *e.get().1.get(),
         hash_table::Entry::Vacant(e) => {
             let s = alloc(arena, s);
             let i = strs.push(s);
@@ -297,13 +299,11 @@ fn no_alloc(_: &Arena, s: &[u8]) -> &'static [u8] {
 
 // SAFETY: `HashTable` is a thin wrapper around `RawTable`. This is not guaranteed but idc.
 #[inline]
-fn cvt<S>(old: &hashbrown::raw::RawTable<RawMapKey<S>>) -> &hash_table::HashTable<RawMapKey<S>> {
+fn cvt<T>(old: &hashbrown::raw::RawTable<T>) -> &hash_table::HashTable<T> {
     unsafe { std::mem::transmute(old) }
 }
 
 #[inline]
-fn cvt_mut<S>(
-    old: &mut hashbrown::raw::RawTable<RawMapKey<S>>,
-) -> &mut hash_table::HashTable<RawMapKey<S>> {
+fn cvt_mut<T>(old: &mut hashbrown::raw::RawTable<T>) -> &mut hash_table::HashTable<T> {
     unsafe { std::mem::transmute(old) }
 }
