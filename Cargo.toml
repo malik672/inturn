@@ -14,6 +14,7 @@ repository = "https://github.com/danipopes/inturn"
 exclude = [".github/", "benches/", "fuzz/", "tests/"]
 
 [dependencies]
+ahash = "0.8"
 boxcar = "0.2"
 bumpalo = { version = "3", default-features = false }
 dashmap = { version = "6.0", default-features = false, features = ["raw-api"] }
@@ -22,6 +23,13 @@ thread_local = "1.1.8"
 
 [features]
 nightly = ["thread_local/nightly"]
+
+[dev-dependencies]
+criterion = { version = "0.7.0", features = ["html_reports"] }
+
+[[bench]]
+name = "intern_benchmark"
+harness = false
 
 [profile.release]
 lto = "thin"

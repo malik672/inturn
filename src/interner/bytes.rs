@@ -1,9 +1,10 @@
 use crate::{InternerSymbol, Symbol};
+use ahash::RandomState;
 use boxcar::Vec as LFVec;
 use bumpalo::Bump;
 use dashmap::DashMap;
 use hashbrown::hash_table;
-use std::{collections::hash_map::RandomState, hash::BuildHasher};
+use std::hash::BuildHasher;
 use thread_local::ThreadLocal;
 
 /// `[u8] -> Symbol` interner.

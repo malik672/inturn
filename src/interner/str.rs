@@ -1,5 +1,6 @@
 use crate::{BytesInterner, InternerSymbol, Symbol};
-use std::{collections::hash_map::RandomState, hash::BuildHasher};
+use ahash::RandomState;
+use std::hash::BuildHasher;
 
 /// String interner.
 ///
