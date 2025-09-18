@@ -1,5 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
 use inturn::BytesInterner;
+use std::collections::HashMap;
 
 fn bench_do_intern(c: &mut Criterion) {
     let interner = BytesInterner::new();
@@ -31,7 +32,7 @@ fn bench_do_intern(c: &mut Criterion) {
 
     // Benchmark repeated interning of same string (cache hit)
     group.bench_function("repeated_same_string", |b| {
-        interner.intern(b"cached_string");
+        interner.intern(b"cached_string"); // Pre-populate
         b.iter(|| {
             black_box(interner.intern(black_box(b"cached_string")))
         });
@@ -56,5 +57,6 @@ fn bench_do_intern(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_do_intern
+
 );
 criterion_main!(benches);
