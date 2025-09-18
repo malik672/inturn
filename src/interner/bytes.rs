@@ -48,13 +48,16 @@ impl<S: Copy> FastCache<S> {
     #[inline]
     fn lookup(&self, hash: u64, s: &[u8]) -> Option<S> {
         let len = s.len();
-        let prefix = Self::compute_prefix(s);
 
-        // Check all 4 cache slots
+        // Fast path: check length first (cheapest comparison)
+        // Most cache misses will fail here immediately
         for entry in &self.entries {
             if let Some(cached) = entry {
-                if cached.hash == hash && cached.len == len && cached.prefix == prefix {
-                    return Some(cached.symbol);
+                if cached.len == len && cached.hash == hash {
+                    let prefix = Self::compute_prefix(s);
+                    if cached.prefix == prefix {
+                        return Some(cached.symbol);
+                    }
                 }
             }
         }
@@ -278,7 +281,9 @@ impl<S: InternerSymbol, H: BuildHasher> BytesInterner<S, H> {
         let hash = self.hash(s);
 
         // Fast path: Check thread-local cache first (no locks!)
-        if let Some(symbol_idx) = FAST_CACHE_U32.with(|cache| cache.borrow().lookup(hash, s)) {
+        // Single borrow for lookup
+        let cache_result = FAST_CACHE_U32.with(|cache| cache.borrow().lookup(hash, s));
+        if let Some(symbol_idx) = cache_result {
             return S::from_usize(symbol_idx as usize);
         }
 
@@ -289,19 +294,17 @@ impl<S: InternerSymbol, H: BuildHasher> BytesInterner<S, H> {
         if let Some((_, v)) = cvt(&shard.read()).find(hash, mk_eq(s)) {
             let symbol = *v.get();
 
-            // Cache the successful lookup for next time
-            FAST_CACHE_U32.with(|cache| cache.borrow_mut().insert(hash, s, symbol.to_usize() as u32));
+            // Only cache strings that are likely to be reused
+            // Skip very long strings (likely unique) and very short strings (cheap to lookup)
+            if s.len() >= 4 && s.len() <= 64 {
+                FAST_CACHE_U32.with(|cache| cache.borrow_mut().insert(hash, s, symbol.to_usize() as u32));
+            }
 
             return symbol;
         }
 
-        // Insert new string
-        let symbol = get_or_insert(&self.strs, &self.arena, s, hash, cvt_mut(&mut shard.write()), alloc);
-
-        // Cache the new symbol
-        FAST_CACHE_U32.with(|cache| cache.borrow_mut().insert(hash, s, symbol.to_usize() as u32));
-
-        symbol
+        // Insert new string - don't cache immediately (likely unique)
+        get_or_insert(&self.strs, &self.arena, s, hash, cvt_mut(&mut shard.write()), alloc)
     }
 
     #[inline]
